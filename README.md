@@ -101,6 +101,13 @@ silence between the announcement and the speaker's first sentence, and `pause_af
 There is no pause after the last speaker. After updating the action, reload the chat tab once so the
 browser picks up the new playback queue.
 
+The button is a toggle (3.2). A press while the circle is generating or playing stops playback, empties
+the queue and ends the generation at its next clip; the sentence already at the TTS engine finishes
+there and is discarded. The next press starts the reply again from the first speaker. There is no
+pause/resume. A press on any Circle reply's button stops whatever is playing. Generation also ends when
+the browser stops answering for 20 seconds (tab closed, or another chat opened). A generation the browser
+has not heard from for 60 seconds no longer counts as running, so the next press starts a fresh one.
+
 Requirements: Settings → Audio TTS engine set to the OpenAI-compatible engine with a base URL. Give
 each speaker model a Voice in the model editor, or name the engine's voice clips after the model ids;
 speakers with neither fall back to the default voice. The `announcement_voice` valve must exist on the

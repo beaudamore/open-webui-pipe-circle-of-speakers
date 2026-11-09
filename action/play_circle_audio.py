@@ -47,8 +47,10 @@ icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAw
 # __event_call__ too and is only accepted while its run id is still the claimed one, so the generation
 # that was stopped ends at its next clip instead of running on through the TTS engine. No answer from
 # the browser within _BROWSER_REPLY_SECONDS (tab closed, or the user moved to another chat: Open WebUI
-# drops execute events for a chat that is not open) ends the run the same way. The browser queue object
-# itself is unchanged, so a tab that already ran 3.1 needs no reload.
+# drops execute events for a chat that is not open) ends the run the same way. A run id the browser has
+# not heard from for _RUN_STALE_SECONDS no longer counts as generating, so a run that ended out of the
+# browser's sight does not swallow the next press. The browser queue object itself is unchanged, so a tab
+# that already ran 3.1 needs no reload.
 
 from typing import Optional, Callable, Awaitable, List, Dict, Tuple
 from types import SimpleNamespace
@@ -123,6 +125,13 @@ class Action:
     # How long the browser gets to answer one __event_call__. An open chat answers in milliseconds; a
     # closed tab or another chat never answers, and Open WebUI's own wait has no time limit by default.
     _BROWSER_REPLY_SECONDS = 20
+
+    # A claimed run id counts as "generating" only while the browser heard from that run this recently
+    # (the claim itself, then every accepted clip). A run that ended where the browser could not be told
+    # (another chat was opened, socket down) would otherwise keep its id claimed and turn the next press
+    # into a stop of nothing. A single clip that takes longer than this at the TTS engine while nothing is
+    # playing makes a press restart the reply instead of stopping it.
+    _RUN_STALE_SECONDS = 60
 
     # ------------------------------------------------------------------ helpers
 
@@ -437,21 +446,26 @@ class Action:
 
     # ------------------------------------------------------------------ browser side
 
-    @staticmethod
-    def _toggle_js(run_id: str) -> str:
-        """One press. Circle generating (a run id is claimed) or playing (queue state not idle): stop it,
-        return 'stopped'. Otherwise claim run_id for this press and return 'started'. Always returns, so
-        the server's __event_call__ always gets its answer."""
+    @classmethod
+    def _toggle_js(cls, run_id: str) -> str:
+        """One press. Circle generating (a run id is claimed and that run was heard from within
+        _RUN_STALE_SECONDS) or playing (the queue's isPlaying, or clips still queued): stop it, return 'stopped'. Otherwise claim
+        run_id for this press and return 'started'. Always returns, so the server's __event_call__ always
+        gets its answer."""
         return f"""
         try {{
             const q = window.circleAudioQueue;
-            const state = window.circleAudioState || 'idle';
-            if (window.circleAudioRun != null || (q && state !== 'idle')) {{
+            const generating = window.circleAudioRun != null
+                && (Date.now() - (window.circleAudioRunAt || 0)) < {cls._RUN_STALE_SECONDS * 1000};
+            // clips can sit queued with isPlaying false: the chat's own read-aloud holds the shared audio element
+            const playing = !!(q && (q.isPlaying || q.queue.length > 0));
+            if (generating || playing) {{
                 window.circleAudioRun = null;
                 if (q) {{ q.stop(); }}
                 return 'stopped';
             }}
             window.circleAudioRun = '{run_id}';
+            window.circleAudioRunAt = Date.now();
             return 'started';
         }} catch (err) {{
             console.error('[CircleAudio] toggle failed:', err);
@@ -475,6 +489,7 @@ class Action:
             if (!q || window.circleAudioRun !== '{run_id}') {{ return false; }}
             q.enqueueBlobFromBase64('{clip_b64}', {json.dumps(mime)});
             {pause}
+            window.circleAudioRunAt = Date.now();
             return true;
         }} catch (err) {{
             console.error('[CircleAudio] enqueue failed:', err);
